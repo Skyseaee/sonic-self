@@ -4,8 +4,9 @@
 > require python = 3.10
 
 the grammar of Pl0:
-program = block "." ;
 ```shell
+program = block "." ;
+
 block = [ "const" ident "=" number {"," ident "=" number} ";"]
         [ "var" ident {"," ident} ";"]
         { "procedure" ident ";" block ";" } statement ;

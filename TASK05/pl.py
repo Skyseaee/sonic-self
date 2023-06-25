@@ -1,8 +1,12 @@
 import copy
 import string
+import ctypes
 from enum import IntEnum
 from typing import NamedTuple
-from PeachPy.peachpy import x86_64 as asm
+from PeachPy.peachpy.x86_64 import *
+from PeachPy.peachpy.x86_64 import abi
+from PeachPy.peachpy.x86_64.operand import *
+from PeachPy.peachpy.x86_64.registers import rsp
 
 TEST_PROGRAM = """
 var a, b, n, t;
@@ -46,6 +50,11 @@ KEYWORD_SET = {
     'odd'
 }
 
+dll = ctypes.CDLL(None)
+dll.dlsym.restype = ctypes.c_ulong
+
+fn_putchar = dll.dlsym(None, ctypes.create_string_buffer(b'putchar'))
+assert fn_putchar, 'putchar not found'
 
 class Token(NamedTuple):
     ty: TokenKind
@@ -178,6 +187,23 @@ class Ir(NamedTuple):
 class Factor(NamedTuple):
     value: any
 
+    def asm(self, ctx: AstEvalContext):
+        if isinstance(self.value, int):
+            MOV(rax, self.value)
+            PUSH(rax)
+        elif isinstance(self.value, str):
+            if (key := self.value) in ctx.vars:
+                pass
+            elif self.value in ctx.consts:
+                MOV(rax, ctx.consts[self.value])
+                PUSH(rax)
+            else:
+                raise RuntimeError('undefined symbol: ' + self.value)
+        elif isinstance(self.value, Expression):
+            self.value.asm(ctx)
+        else:
+            raise RuntimeError('invalid factor value')
+
     def gen(self, buf: list[Ir]):
         if isinstance(self.value, int):
             buf.append(Ir(IrOpCode.LoadLit, self.value))
@@ -213,6 +239,21 @@ class Factor(NamedTuple):
 class Term(NamedTuple):
     lhs: Factor
     rhs: list[tuple[str, Factor]]
+
+    def asm(self):
+        self.lhs.asm()
+        for op, rhs in self.rhs:
+            rhs.asm()
+            POP(rcx) # 先POP右值
+            POP(rax)
+            if op == '*':
+                IMUL(rax, rcx)
+                PUSH(rax)
+            elif op == '/':
+                IDIV(rcx)
+                PUSH(rax)
+            else:
+                raise RuntimeError('invalid expression operator')
 
     def gen(self, buf: list[Ir]):
         self.lhs.gen(buf)
@@ -251,6 +292,27 @@ class Expression(NamedTuple):
     mod: str
     lhs: Term
     rhs: list[tuple[str, Term]]
+
+    def asm(self):
+        self.lhs.asm()
+
+        if self.mod == '-':
+            NEG(MemoryOperand(rsp, 8))
+        elif self.mod not in {'+', ''}:
+            raise RuntimeError('invalid expression sign ' + self.mod)
+
+        for op, rhs in self.rhs:
+            rhs.asm()
+            POP(rcx)
+            POP(rax)
+            if op == '+':
+                ADD(rax, rcx)
+                PUSH(rax)
+            elif op == '-':
+                SUB(rax, rcx)
+                PUSH(rax)
+            else:
+                raise RuntimeError('invalid expression operator')
 
     def gen(self, buf: list[Ir]):
         self.lhs.gen(buf)
@@ -302,6 +364,9 @@ class Const(NamedTuple):
 class Assign(NamedTuple):
     name: str
     expr: Expression
+
+    def asm(self):
+        self.expr.asm()
 
     def gen(self, buf: list[Ir]):
         self.expr.gen(buf)
@@ -366,6 +431,9 @@ class InputOutput(NamedTuple):
 class Statement(NamedTuple):
     stmt: any
 
+    def asm(self):
+        self.stmt.asm()
+
     def gen(self, buf: list[Ir]):
         self.stmt.gen(buf)
 
@@ -376,6 +444,10 @@ class Statement(NamedTuple):
 
 class Begin(NamedTuple):
     body: list[Statement]
+
+    def asm(self):
+        for stmt in self.body:
+            stmt.asm()
 
     def gen(self, buf: list[Ir]):
         for stmt in self.body:
@@ -388,6 +460,10 @@ class Begin(NamedTuple):
 
 class OddCondition(NamedTuple):
     expr: Expression
+
+    def asm(self):
+        self.expr.asm()
+        AND(MemoryOperand(rax, 8), 1)
 
     def gen(self, buf: list[Ir]):
         self.expr.gen(buf)
@@ -404,6 +480,29 @@ class StdCondition(NamedTuple):
     op: str
     lhs: Expression
     rhs: Expression
+
+    def asm(self):
+        self.lhs.asm()
+        self.rhs.asm()
+        POP(rax)
+        POP(rcx)
+        CMP(rax, rcx)
+
+        if self.op == '>':
+            SETG(rax)
+        elif self.op == '>=':
+            SETGE(rax)
+        elif self.op == '<':
+            SETL(rax)
+        elif self.op == '<=':
+            SETLE(rax)
+        elif self.op == '==':
+            SETE(rax)
+        elif self.op == '#':
+            SETNE(rax)
+        else:
+            raise RuntimeError('invalid std condition operation ' + self.op)
+        PUSH(rax)
 
     def gen(self, buf: list[Ir]):
         self.lhs.gen(buf)
@@ -449,6 +548,9 @@ class StdCondition(NamedTuple):
 class Condition(NamedTuple):
     cond: OddCondition | StdCondition
 
+    def asm(self):
+        self.cond.asm()
+
     def gen(self, buf: list[Ir]):
         self.cond.gen(buf)
 
@@ -459,6 +561,9 @@ class Condition(NamedTuple):
 class If(NamedTuple):
     cond: Condition
     then: Statement
+
+    def asm(self):
+        pass # TODO
 
     def gen(self, buf: list[Ir]):
         self.cond.gen(buf)
@@ -503,6 +608,9 @@ class Procedure(NamedTuple):
     name: str
     body: 'Block'
 
+    def asm(self):
+        pass # TODO
+
     def gen(self, buf: list[Ir]):
         self.body.gen(buf)
 
@@ -518,6 +626,9 @@ class Block(NamedTuple):
     vars: list[str]
     procs: list[Procedure]
     stmt: Statement
+
+    def asm(self):
+        pass
 
     def gen(self, buf: list[Ir]):
         for cc in self.consts:
@@ -945,6 +1056,143 @@ def ir_eval(buf: list[Ir], ctx: AstEvalContext):
         else:
             raise RuntimeError('invalid instruction')
 
+
+def ir_asm(buf: list[Ir]) -> bytes:
+    brtab = {}
+    pctab = []
+    littab = {}
+    vartab = {}
+
+    nbuf = [
+        PUSH(rbp),
+        MOV(rbp, rsp),
+        None,
+        PUSH(r15),
+    ]
+
+    for i, ir in enumerate(buf):
+        pc = len(nbuf)
+        pctab.append(pc)
+
+        match ir.op:
+            case IrOpCode.Add:
+                nbuf.append(POP(rax)) # 抛出右值
+                nbuf.append(ADD([rsp], rax)) # 操作内存 加
+            case IrOpCode.Sub:
+                nbuf.append(POP(rax))
+                nbuf.append(SUB([rsp], rax))
+            case IrOpCode.Mul:
+                nbuf.append(POP(rcx))
+                nbuf.append(MOV(rax, [rsp]))
+                nbuf.append(IMUL(rcx))
+                nbuf.append(MOV([rsp], rax))
+            case IrOpCode.Div:
+                nbuf.append(POP(rcx))
+                nbuf.append(MOV(rax, [rsp]))
+                nbuf.append(IDIV(rcx))
+                nbuf.append(MOV([rsp], rax))
+            case IrOpCode.Neg:
+                nbuf.append(NEG(MemoryOperand(rax, 8)))
+            case IrOpCode.Eq | IrOpCode.Ne | IrOpCode.Lt | IrOpCode.Lte | IrOpCode.Gt | IrOpCode.Gte:
+                POP(rcx)
+                CMP([rsp], rcx)
+                match ir.op:
+                    case IrOpCode.Eq: nbuf.append(SETE([rsp]))
+                    case IrOpCode.Ne: nbuf.append(SETNE([rsp]))
+                    case IrOpCode.Lt: nbuf.append(SETL([rsp]))
+                    case IrOpCode.Lte: nbuf.append(SETLE([rsp]))
+                    case IrOpCode.Gt: nbuf.append(SETG([rsp]))
+                    case IrOpCode.Gte: nbuf.append(SETGE([rsp]))
+            case IrOpCode.Odd:
+                nbuf.append(AND(MemoryOperand(rsp, 8), 1))
+            case IrOpCode.LoadVar:
+                if not isinstance(ir.args, str):
+                    raise RuntimeError('invalid loadvar args')
+                elif ir.args in littab:
+                    nbuf.append(MOV(rax, ir.args))
+                    nbuf.append(PUSH(rax))
+                    continue
+                elif ir.args in vartab:
+                    nbuf.append(MOV(rax, [rbp - vartab[ir.args] * 8 - 8]))
+                    nbuf.append(PUSH(rax))
+                else:
+                    raise RuntimeError('undefined variable: ' + ir.args)
+
+            case IrOpCode.LoadLit:
+                if not isinstance(ir.args, str) or not isinstance(ir.value, int):
+                    raise RuntimeError('invalid deflit args')
+                nbuf.append(MOV(rax, ir.args))
+                nbuf.append(PUSH(rax))
+            case IrOpCode.Store:
+                if not isinstance(ir.args, str):
+                    raise RuntimeError('invalid store args')
+                elif ir.args not in vartab:
+                    raise RuntimeError('undefined variable: ' + ir.args)
+                else:
+                    nbuf.append(POP(rax))
+                    nbuf.append(MOV([rbp - vartab[ir.args] * 8 - 8], rax))
+
+            case IrOpCode.Jump:
+                if not isinstance(ir.args, int):
+                    raise RuntimeError('invalid jump args')
+
+                if not (0 <= ir.args < len(buf)):
+                    raise RuntimeError('branch out of bounds')
+
+                nbuf.append(JMP(RIPRelativeOffset(0)))
+                brtab[pc] = ir.args
+
+            case IrOpCode.BrFalse:
+                if not isinstance(ir.args, int):
+                    raise RuntimeError('invalid brfalse args')
+                if not (0 <= ir.args < len(buf)):
+                    raise RuntimeError('branch out of bounds')
+
+                nbuf.append(POP(rax))
+                nbuf.append(TEST(rax, rax))
+                brtab[pc] = ir.args
+                nbuf.append(JZ(RIPRelativeOffset(0)))
+
+            case IrOpCode.DefVar:
+                if not isinstance(ir.args, str):
+                    raise RuntimeError('invalid defvar args')
+                elif ir.args in littab or ir.args in vartab:
+                    raise RuntimeError('const redeclared: ' + ir.args)
+                else:
+                    vartab[ir.args] = len(vartab)
+
+            case IrOpCode.DefLit:
+                if not isinstance(ir.args, str) or not isinstance(ir.value, int):
+                    raise RuntimeError('invalid deflit args')
+                elif ir.args in littab or ir.args in vartab:
+                    raise RuntimeError('const redeclared: ' + ir.args)
+                else:
+                    littab[ir.args] = ir.value
+
+            case IrOpCode.DefProc:
+                raise NotImplementedError('implement this.') #TODO
+            case IrOpCode.Input:
+                pass
+            case IrOpCode.Output:
+                nbuf.append(POP(rdi))
+                nbuf.append(MOV(r15, fn_putchar))
+                nbuf.append(CALL(r15))
+            case IrOpCode.Halt:
+                break
+            case _:
+                raise RuntimeError("invalid instruction.")
+    stack_size = len(vartab) * 8
+    nbuf[nbuf.index(None)] = SUB(rsp, len(vartab) * 8)
+    nbuf.extend([
+        POP(r15),
+        ADD(rsp, stack_size),
+        POP(rbp),
+        RET()
+    ])
+
+    func = Function('pl0_asm', ())
+    func.add_instruction(nbuf)
+    func.finalize(abi.detect()).encode().load()()
 
 def main():
     ps = Parser(Lexer(TEST_PROGRAM))

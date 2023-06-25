@@ -8,7 +8,7 @@ import (
 
 type vm struct {
 	memory  []byte
-	pointer int
+	pointer int // memory pointer
 }
 
 type printBuffer struct {

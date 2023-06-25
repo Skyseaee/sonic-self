@@ -21,8 +21,16 @@ func (c *Chunk) String() string {
 	length := c.Len()
 
 	for i := 0; i < length; i++ {
-		s += fmt.Sprintf("%4d %s\n", i, c.Instruction((i)).Instruction())
+		s += fmt.Sprintf("%4d %s\n", i, c.Instruction(i).Instruction())
 	}
 
 	return s
+}
+
+// print ins to check ins
+func (c Chunk) PrintIns() {
+	ins := c.ins
+	for i, is := range ins {
+		fmt.Printf("%d: %s\n", i, is.Instruction())
+	}
 }

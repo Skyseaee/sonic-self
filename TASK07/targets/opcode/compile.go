@@ -34,7 +34,7 @@ func Compile(c *instruction.Chunk) []int {
 			start := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 
-			diff := len(dst) - start
+			diff := len(dst) - start // the len of loop
 			dst[len(dst)-1], dst[start-1] = diff, diff
 		case instruction.Set:
 			dst = append(dst, int(SetValue), v.Offset, int(v.X))

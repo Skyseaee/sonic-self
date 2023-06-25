@@ -32,7 +32,8 @@ func mainFunc() error {
 	if err != nil {
 		return err
 	}
-
+	chunks := ins
+	chunks.PrintIns()
 	oc := opcode.Compile(ins)
 	opcode.Run(oc)
 	return nil
